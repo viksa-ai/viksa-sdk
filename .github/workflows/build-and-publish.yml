@@ -1,7 +1,8 @@
 # Adapted from https://github.com/Srirammkm/jsonQ (.github/workflows/build-and-publish.yaml.bkp)
-# Publishes viksa-ai to PyPI on version tags. See .github/PYPI_PUBLISHING.md for secrets setup.
+# Publishes only the public maeyr SDK. The application-only platform runtime
+# is deliberately excluded from every package-registry publishing path.
 
-name: Build and Publish to PyPI
+name: Build and Publish maeyr to PyPI
 
 on:
   push:
@@ -13,7 +14,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   test-before-release:
@@ -39,13 +39,13 @@ jobs:
           ruff format --check src tests
 
       - name: Pytest
-        run: pytest --cov=viksa_ai --cov-report=term-missing
+        run: pytest --cov=maeyr --cov-report=term-missing
 
       - name: Validate package import
         run: |
           python -c "
-          from viksa_ai.client import ViksaClient
-          from viksa_ai.runtime.inject import to_module_source
+          from maeyr.client import MaeyrClient
+          from maeyr.runtime.inject import to_module_source
           assert to_module_source()
           print('Package structure OK')
           "
@@ -55,9 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: test-before-release
     if: >
-      github.event_name == 'push' ||
+      (github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'release' && github.event.action == 'published')
+      (github.event_name == 'release' && github.event.action == 'published'))
     environment: pypi
     steps:
       - name: Checkout
@@ -77,7 +77,9 @@ jobs:
         run: python -m build
 
       - name: Check distributions
-        run: twine check dist/*
+        run: |
+          twine check dist/*
+          python scripts/verify_public_sdk_distribution.py dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -108,7 +110,7 @@ jobs:
             echo "Tag $TAG already exists; skipping."
             exit 0
           fi
-          git tag -a "$TAG" -m "Release ${TAG} (PyPI viksa-ai ${VERSION})"
+          git tag -a "$TAG" -m "Release ${TAG} (PyPI maeyr ${VERSION})"
           git push origin "$TAG"
 
   post-release-validation:
@@ -124,9 +126,9 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
-          pip install "viksa-ai==${VERSION}"
+          pip install "maeyr==${VERSION}"
           python -c "
-          from viksa_ai.client import ViksaClient
-          import viksa_ai
-          print('Installed viksa-ai', viksa_ai.__version__ if hasattr(viksa_ai, '__version__') else VERSION)
+          from maeyr.client import MaeyrClient
+          import maeyr
+          print('Installed maeyr', maeyr.__version__ if hasattr(maeyr, '__version__') else VERSION)
           "

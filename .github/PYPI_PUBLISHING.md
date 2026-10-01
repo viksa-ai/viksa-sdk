@@ -1,112 +1,59 @@
-# PyPI publishing for `viksa-sdk`
+# Package publishing policy
 
-The [Build and Publish to PyPI](workflows/build-and-publish.yml) workflow runs tests, builds the package with `python -m build`, checks artifacts with `twine check`, and uploads to [PyPI](https://pypi.org/project/viksa-ai/).
+This repository contains one public distribution and one private application
+component. They have deliberately different delivery paths.
 
-**Triggers**
+| Distribution | Visibility | Delivery |
+| --- | --- | --- |
+| `maeyr` | Public SDK | `build-and-publish.yml` publishes tagged releases to PyPI |
+| `maeyr-platform-runtime` | Internal only | A reviewed private-repository commit is passed directly to service image builds |
 
-- Push a Git tag matching `v*` (for example `v0.2.2`)
-- Publish a GitHub Release
-- Manual run: **Actions → Build and Publish to PyPI → Run workflow**
+## Internal platform runtime
 
----
+`packages/maeyr-platform-runtime` must never be uploaded to PyPI, TestPyPI, or
+another public package registry. There is no runtime publishing workflow or
+runtime release tag. Building its wheel and source distribution remains useful
+for CI validation, but those artifacts stay inside the workflow that built them.
 
-## Option A (recommended): PyPI trusted publishing
+Service CI checks out this private repository using the least-privilege
+`MAEYR_SDK_READ_TOKEN`, verifies a full commit SHA, and supplies
+`packages/maeyr-platform-runtime` as the named BuildKit context
+`maeyr-platform-runtime`. The service Dockerfile installs it with:
 
-No long-lived API token is stored in GitHub. PyPI issues a short-lived token per workflow run.
-
-### 1. Create the PyPI project (first time only)
-
-1. Sign in at [pypi.org](https://pypi.org).
-2. Create project **`viksa-ai`** if it does not exist yet (or claim the name you use in `pyproject.toml`).
-
-### 2. Add a trusted publisher on PyPI
-
-1. Open **Your projects → viksa-ai → Publishing**.
-2. **Add a new pending publisher** (or **Manage publishers**).
-3. Set:
-
-   | Field | Value |
-   |--------|--------|
-   | PyPI project name | `viksa-ai` |
-   | Owner | `viksa-ai` (GitHub org or your user) |
-   | Repository name | `viksa-sdk` |
-   | Workflow name | `Build and Publish to PyPI` |
-   | Environment name | `pypi` (must match the workflow `environment: pypi`) |
-
-4. Save. PyPI shows the publisher as **pending** until the first successful publish from that workflow.
-
-### 3. GitHub environment (optional but recommended)
-
-1. Repo **Settings → Environments → New environment** → name it `pypi`.
-2. Add protection rules if you want (required reviewers, deployment branches).
-3. You do **not** need to add `PYPI_API_TOKEN` when using trusted publishing only.
-
-### 4. Release
-
-**Recommended (tag-driven):**
-
-```bash
-# Bump version in pyproject.toml first, then:
-git tag v0.2.2
-git push origin v0.2.2
+```text
+pip install --no-index --no-build-isolation --no-deps /tmp/maeyr-platform-runtime
+pip install --no-build-isolation --constraint /tmp/maeyr-platform-runtime.constraints -r requirements.txt /tmp/maeyr-platform-runtime
+pip check
 ```
 
-**Manual dispatch:** Actions → **Build and Publish to PyPI** → **Run workflow** on `main`. After a successful publish, the workflow creates and pushes `v<version>` from `pyproject.toml` if that tag does not exist yet.
+Public service requirement files and dependency tables must not contain
+`maeyr-platform-runtime`. This separation prevents pip from consulting a public
+index for an internal application component and prevents dependency confusion.
+The constrained second pass may resolve the runtime's ordinary third-party
+dependencies from the approved public index, but it must resolve the runtime
+distribution itself only from the private local source. `pip check` makes
+missing or incompatible transitive dependencies a build failure.
+Workspace development uses
+`devops/scripts/install_internal_service_dependencies.py`, which applies the
+same local-source constraint while installing service requirements.
 
-Or create a GitHub Release from the tag; the workflow also runs on `release: published`.
+## Public `maeyr` releases
 
----
+The root [build-and-publish workflow](workflows/build-and-publish.yml) builds the
+public `maeyr` distribution from the repository root. Its `v<version>` tags,
+PyPI credentials, and post-release index checks apply only to `maeyr`.
 
-## Option B: API token secret (`PYPI_API_TOKEN`)
-
-Same pattern as [jsonQ](https://github.com/Srirammkm/jsonQ) (`secrets.PYPI_PASSWORD` / `secrets.pypi_password`). Use this if you are not using trusted publishing yet.
-
-### 1. Create a PyPI API token
-
-1. [pypi.org](https://pypi.org) → **Account settings → API tokens**.
-2. **Add API token**.
-3. Scope: **Entire account** (first upload) or **Project: viksa-ai** (after the project exists).
-4. Copy the token once (starts with `pypi-`).
-
-### 2. Add the GitHub secret
-
-1. Open `https://github.com/viksa-ai/viksa-sdk/settings/secrets/actions`.
-2. **New repository secret**:
-   - **Name:** `PYPI_API_TOKEN`
-   - **Value:** the `pypi-...` token (paste the full string)
-
-For an organization repo, you can instead use **Organization secrets** and allow access for `viksa-sdk`.
-
-### 3. Test with a dry run (local, optional)
+Local runtime validation is still supported:
 
 ```bash
-python -m pip install build twine
+python -m pip install -e 'packages/maeyr-platform-runtime[dev]'
+cd packages/maeyr-platform-runtime
+ruff check src tests
+ruff format --check src tests
+mypy
+pytest
 python -m build
-twine check dist/*
-# Test upload to TestPyPI first:
-twine upload --repository testpypi dist/* -u __token__ -p YOUR_TESTPYPI_TOKEN
+python -m twine check dist/*
 ```
 
-TestPyPI token secret (optional): add `TESTPYPI_API_TOKEN` and a separate workflow job if you want TestPyPI uploads.
-
----
-
-## jsonQ workflow reference
-
-| jsonQ file | Purpose |
-|------------|---------|
-| `build-and-publish.yaml.bkp` | Tests → `python -m build` → `twine upload` with `TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}` |
-| `release.yaml` | Matrix tests on `main` + `pypa/gh-action-pypi-publish` with `secrets.pypi_password` |
-
-This repo uses one workflow (`build-and-publish.yml`) that combines pre-release tests (like jsonQ’s `test-before-release`) and `pypa/gh-action-pypi-publish@release/v1` (like jsonQ’s `release.yaml`), with optional `PYPI_API_TOKEN` or trusted publishing.
-
----
-
-## Troubleshooting
-
-| Error | Fix |
-|--------|-----|
-| `403 Invalid or non-existent authentication` | Trusted publisher owner/repo/workflow/environment must match exactly; or set `PYPI_API_TOKEN`. |
-| `File already exists` | Bump `version` in `pyproject.toml`; PyPI does not allow re-uploading the same version. |
-| Publish job skipped | Tag must match `v*`; or run workflow manually. |
-| Tests fail | Fix on `main` first; CI workflow `ci.yml` should be green. |
+These commands do not authorize `twine upload` or any registry publication.
